@@ -1,0 +1,9 @@
+.git
+.github
+task-outcomes
+tests
+examples
+*.example
+prompts.txt
+README.md
+qse-results

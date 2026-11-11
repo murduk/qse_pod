@@ -1,0 +1,152 @@
+# Reusable workflow: run an IBM Quantum Safe Explorer scan on the calling repo.
+#
+# Caller example:
+#   jobs:
+#     qse:
+#       permissions: { contents: read, packages: read }
+#       uses: ncee-dp-tech-sme/qse_pod/.github/workflows/qse-scan.yml@v1
+#       with:
+#         gcm_server_url: https://gcm.example.com
+#       secrets:
+#         gcm_bearer_token: ${{ secrets.GCM_BEARER_TOKEN }}
+name: QSE scan
+
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        description: qse-scanner image tag to use
+        type: string
+        default: v1
+      runs_on:
+        description: Runner label
+        type: string
+        default: ubuntu-latest
+      working_directory:
+        description: Directory (relative to the repo root) to scan
+        type: string
+        default: .
+      app_name:
+        description: Application name label (default = repo name)
+        type: string
+        default: ''
+      app_version:
+        description: Version label (default = short commit SHA)
+        type: string
+        default: ''
+      languages:
+        description: Comma-separated QSE languages, e.g. ".java,.py" (default = auto-detect)
+        type: string
+        default: ''
+      scan_all_languages:
+        description: Scan all QSE-supported languages regardless of detection
+        type: boolean
+        default: false
+      exclude_paths:
+        description: Comma-separated paths excluded from the scan (-ef)
+        type: string
+        default: src/test,vendor,node_modules,.git,venv,.venv,.qse-venv
+      py_module_path:
+        description: Path passed to -py_module_path (default = auto-created venv)
+        type: string
+        default: ''
+      skip_build:
+        description: Skip the built-in pre-compilation step
+        type: boolean
+        default: false
+      pre_build_command:
+        description: Optional bash command run before the scan (e.g. a custom build)
+        type: string
+        default: ''
+      cache_dependencies:
+        description: Cache Maven/Gradle/NuGet dependencies between runs
+        type: boolean
+        default: true
+      upload_to_gcm:
+        description: "auto | true | false - auto uploads only when GCM URL + token are provided"
+        type: string
+        default: auto
+      gcm_server_url:
+        description: Guardium Cryptography Manager base URL
+        type: string
+        default: ''
+      fail_on_critical:
+        description: Fail the job when weak algorithms (MD5, SHA-1, DES, RC4, RSA-1024) are found
+        type: boolean
+        default: false
+      artifact_name:
+        description: Name of the uploaded results artifact
+        type: string
+        default: qse-scan-results
+    secrets:
+      gcm_bearer_token:
+        description: Bearer token for the GCM API
+        required: false
+    outputs:
+      critical_found:
+        description: "'true' if weak algorithms were found"
+        value: ${{ jobs.scan.outputs.critical_found }}
+
+jobs:
+  scan:
+    name: Quantum Safe Explorer scan
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/ncee-dp-tech-sme/qse-scanner:${{ inputs.image_tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    outputs:
+      critical_found: ${{ steps.scan.outputs.critical_found }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Cache dependencies
+        if: inputs.cache_dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gradle/caches
+            ~/.nuget/packages
+          key: qse-deps-${{ runner.os }}-${{ hashFiles('**/pom.xml', '**/build.gradle*', '**/*.csproj') }}
+          restore-keys: qse-deps-${{ runner.os }}-
+
+      - name: Pre-build
+        if: inputs.pre_build_command != ''
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        run: ${{ inputs.pre_build_command }}
+
+      - name: Run QSE scan
+        id: scan
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          SCAN_DIR: .
+          APP_NAME: ${{ inputs.app_name }}
+          APP_VERSION: ${{ inputs.app_version }}
+          LANGUAGES: ${{ inputs.languages }}
+          SCAN_ALL_LANGUAGES: ${{ inputs.scan_all_languages }}
+          EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
+          PY_MODULE_PATH: ${{ inputs.py_module_path }}
+          SKIP_BUILD: ${{ inputs.skip_build }}
+          UPLOAD_TO_GCM: ${{ inputs.upload_to_gcm }}
+          GCM_SERVER_URL: ${{ inputs.gcm_server_url }}
+          GCM_BEARER_TOKEN: ${{ secrets.gcm_bearer_token }}
+          FAIL_ON_CRITICAL: ${{ inputs.fail_on_critical }}
+        run: qse-scan
+
+      - name: Upload results
+        if: always() && steps.scan.outputs.results_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ steps.scan.outputs.results_dir }}
+          if-no-files-found: warn

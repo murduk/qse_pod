@@ -1,0 +1,30 @@
+# Copy to .github/workflows/qse-scan.yml in the repository you want to scan.
+#
+# Prerequisites (one-time, see qse_pod README):
+#   - The qse-scanner GHCR package grants this repo read access
+#   - qse_pod's Actions access allows repos in the ncee-dp-tech-sme org
+#   - Secret GCM_BEARER_TOKEN and variable GCM_SERVER_URL (only if uploading to GCM)
+name: Quantum Safe scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  qse:
+    permissions:
+      contents: read
+      packages: read
+    uses: ncee-dp-tech-sme/qse_pod/.github/workflows/qse-scan.yml@v1
+    with:
+      gcm_server_url: ${{ vars.GCM_SERVER_URL }}
+      # Only upload to GCM from main; PRs just scan and attach the artifact
+      upload_to_gcm: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+      fail_on_critical: false
+      # exclude_paths: src/test,vendor,node_modules,.git
+      # pre_build_command: ./mvnw -B -DskipTests package dependency:copy-dependencies
+      # skip_build: true
+    secrets:
+      gcm_bearer_token: ${{ secrets.GCM_BEARER_TOKEN }}

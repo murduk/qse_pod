@@ -1,0 +1,135 @@
+# Builds the qse-scanner image, smoke-tests it against tests/fixtures, and
+# pushes it to GHCR (private). Requires:
+#   secrets.QSE_TOKEN     - token with read access to the QSE CLI repo (github.ibm.com)
+#   vars.QSE_REPO_URL     - optional override of the QSE CLI repo URL
+name: Build qse-scanner image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - Dockerfile
+      - scripts/**
+      - tests/**
+      - .github/workflows/build-image.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - scripts/**
+      - tests/**
+      - .github/workflows/build-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/ncee-dp-tech-sme/qse-scanner
+  DEFAULT_QSE_REPO_URL: https://github.ibm.com/quantum-safe-engineering/quantum-safe-read-repos.git
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint scan script
+        run: |
+          bash -n scripts/qse-scan.sh
+          shellcheck -S warning scripts/qse-scan.sh
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+
+      - name: Build image (local, for testing)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: qse-scanner:test
+          build-args: |
+            QSE_REPO_URL=${{ vars.QSE_REPO_URL || env.DEFAULT_QSE_REPO_URL }}
+          secrets: |
+            qse_token=${{ secrets.QSE_TOKEN }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test - toolchains
+        run: |
+          docker run --rm --entrypoint bash qse-scanner:test -c '
+            set -e
+            javac -version; mvn -v | head -1; gradle -v | grep Gradle
+            go version; python3 --version; gcc --version | head -1; cmake --version | head -1
+            dotnet --version; dart --version
+            test -x /opt/qse/cli.sh && echo "QSE CLI present"'
+
+      - name: Smoke test - scan fixtures
+        run: |
+          set -euo pipefail
+          for fixture in tests/fixtures/*/; do
+            name="$(basename "${fixture}")"
+            work="${RUNNER_TEMP}/fixtures/${name}"
+            out="${RUNNER_TEMP}/results/${name}"
+            mkdir -p "${work}" "${out}"
+            cp -r "${fixture}." "${work}/"
+            echo "::group::Scan ${name}"
+            rc=0
+            docker run --rm \
+              -v "${work}:/src" -v "${out}:/out" \
+              -e SCAN_DIR=/src -e OUTPUT_DIR=/out \
+              -e APP_NAME="fixture-${name}" -e APP_VERSION=test \
+              -e UPLOAD_TO_GCM=false -e FAIL_ON_CRITICAL=true \
+              qse-scanner:test || rc=$?
+            echo "::endgroup::"
+            ls -R "${out}"
+            if ! find "${out}" -name 'quantum_safe_*.json' | grep -q .; then
+              echo "::error::${name}: no QSE findings JSON produced"; exit 1
+            fi
+            if [[ "${rc}" -ne 2 ]]; then
+              echo "::error::${name}: expected exit 2 (critical findings), got ${rc}"; exit 1
+            fi
+          done
+
+      - name: Upload smoke-test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-results
+          path: ${{ runner.temp }}/results
+          if-no-files-found: ignore
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            QSE_REPO_URL=${{ vars.QSE_REPO_URL || env.DEFAULT_QSE_REPO_URL }}
+          secrets: |
+            qse_token=${{ secrets.QSE_TOKEN }}
+          cache-from: type=gha

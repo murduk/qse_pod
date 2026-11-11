@@ -1,16 +1,15 @@
 # =============================================================================
 # .gitignore for qse_pod
-#
-# Changes:
-#   2026-08-21 04:17:44 - Initial creation
 # =============================================================================
 
-# Local environment — NEVER commit real credentials
+# Local credentials — NEVER commit
 .env
-.always_allow
 
-# Local test repos list (used instead of mounted ConfigMap during local dev)
-repos-local.yaml
+# Local scan output / fixture build artefacts
+qse-results/
+tests/fixtures/**/target/
+tests/fixtures/**/build/
+tests/fixtures/**/.qse-venv/
 
 # OS / editor artefacts
 .DS_Store
@@ -22,6 +21,3 @@ Thumbs.db
 
 # Bob AI assistant workspace
 .bob/
-
-# Stray subdirectory created during session scaffolding
-qse_pod/
